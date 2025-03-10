@@ -1,24 +1,77 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { CreateOrderDto } from '../dto/create-order.dto';
 import { UpdateOrderStatusDto } from '../dto/update-order.dto';
 import { PrismaService } from '../../../prisma/services/prisma.service';
-import { RpcException } from '@nestjs/microservices';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { Order } from '@prisma/client';
 import { PaginationResponse } from '../../common/pagination-response.type';
 import { OrderPaginationDto } from '../dto/order-pagination.dto';
+import { NATS_SERVICE, PRODUCT_SERVICE } from 'src/config/services';
+import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger('OrdersService');
 
   constructor(
-    private readonly prismaService: PrismaService,  
+    private readonly prismaService: PrismaService,
+    @Inject(NATS_SERVICE) private readonly client: ClientProxy
   ) {}
 
   public async create(dto: CreateOrderDto) {
-    return await this.prismaService.order.create({
-      data: dto
-    })
+    try {
+      const productIds = dto.items.map( i => i.productId );
+      const products: any[] = await firstValueFrom(
+        this.client.send({ cmd: 'validateProducts' }, { ids: productIds })
+      );
+
+      const totalAmount = dto.items.reduce( (acc, orderItem) => {
+        const productPrice = products.find( product => product.id === orderItem.productId ).price;
+        return acc + (productPrice * orderItem.quantity);
+      }, 0);
+
+      const totalItems = dto.items.reduce( (acc, orderItem) => {
+        return acc + (orderItem.quantity);
+      }, 0)
+
+      const order = await this.prismaService.order.create({
+        data: {
+          totalItems,
+          totalAmount,
+          orderItems: {
+            createMany: {
+              data: dto.items.map( orderItem => ({
+                price: products.find( product => product.id === orderItem.productId ).price,
+                productId: orderItem.productId,
+                quantity: orderItem.quantity
+              }))
+            }
+          }
+        },
+        include: {
+          orderItems: {
+            select: {
+              price: true,
+              quantity: true,
+              productId: true
+            }
+          },
+        }
+      });
+
+      return {
+        ...order,
+        orderItems: order.orderItems.map( orderItem => ({
+          ...orderItem,
+          productName: products.find( product => product.id === orderItem.productId ).name 
+        }))
+      };
+    } catch (error) {
+      throw new RpcException({
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Check logs to see errors.'
+      })
+    }
   }
 
   public async findAll(dto: OrderPaginationDto): Promise<PaginationResponse<Order>> {
@@ -27,7 +80,7 @@ export class OrdersService {
     const lastPage = Math.ceil( totalPages / limit );
 
     const data = await this.prismaService.order.findMany({
-      skip: (page -1) * limit,
+      skip: (page - 1) * limit,
       take: limit,
       where: { status: dto?.status }
     });
@@ -45,6 +98,15 @@ export class OrdersService {
   public async findById(id: string) {
     const order = await this.prismaService.order.findUnique({
       where: { id },
+      include: {
+        orderItems: {
+          select: {
+            price: true,
+            quantity: true,
+            productId: true,
+          }
+        }
+      }
     });
 
     if(!order) {
@@ -54,7 +116,18 @@ export class OrdersService {
       });
     }
 
-    return order;
+    const productIds = order.orderItems.map( orderItem => orderItem.productId);
+    const products: any[] = await firstValueFrom(
+      this.client.send({ cmd: 'validateProducts' }, { ids: productIds })
+    );
+
+    return {
+      ...order,
+      OrderItem: order.orderItems.map( orderItem => ({
+        ...orderItem,
+        name: products.find(product => product.id === orderItem.productId).name
+      }))
+    };
   }
 
   public async updateStatus(dto: UpdateOrderStatusDto) {

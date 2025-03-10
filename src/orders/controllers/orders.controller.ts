@@ -9,22 +9,22 @@ import { OrderPaginationDto } from '../dto/order-pagination.dto';
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
-  @MessagePattern({ cmd: 'create' })
+  @MessagePattern({ cmd: 'createOrder' })
   public async create(@Payload() dto: CreateOrderDto) {
     return await this.ordersService.create(dto);
   }
 
-  @MessagePattern({ cmd: 'findAll' })
+  @MessagePattern({ cmd: 'findAllOrders' })
   findAll(@Payload() dto: OrderPaginationDto) {
     return this.ordersService.findAll(dto);
   }
 
-  @MessagePattern({ cmd: 'findById' })
+  @MessagePattern({ cmd: 'findOrderById' })
   public async findById(@Payload('id', ParseUUIDPipe) id: string) {
     return await this.ordersService.findById(id);
   }
 
-  @MessagePattern({ cmd: 'updateStatus' })
+  @MessagePattern({ cmd: 'updateOrderStatus' })
   update(@Payload() dto: UpdateOrderStatusDto) {
     return this.ordersService.updateStatus(dto);
   }
